@@ -1,0 +1,11 @@
+export const APP_NAME = "azure-devops-mcp-private-connector";
+export const APP_VERSION = "1.0.0";
+export const DEFAULT_PORT = 3000;
+export const DEFAULT_LOG_LEVEL = "info";
+export const DEFAULT_TOP = 20;
+export const DEFAULT_RUN_TOP = 10;
+export const MAX_TOP = 50;
+export const WIKI_CONTENT_MAX_LENGTH = 50_000;
+export const REQUEST_TIMEOUT_MS = 10_000;
+export const MAX_RETRIES = 2;
+export const RETRY_BASE_DELAY_MS = 250;

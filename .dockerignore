@@ -1,0 +1,9 @@
+node_modules
+dist
+.env
+.git
+nginx/certs/*.pem
+*.log
+.env.example
+deploy/
+tests/

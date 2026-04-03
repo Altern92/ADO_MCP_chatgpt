@@ -1,0 +1,308 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Azure DevOps MCP Server",
+    "version": "1.0.0",
+    "description": "OpenAPI schema for the Azure DevOps MCP server. The /health endpoint is public. The /mcp endpoint accepts JSON-RPC 2.0 requests over HTTP, requires a user-provided Azure DevOps PAT as a Bearer token, and returns Server-Sent Events."
+  },
+  "servers": [
+    {
+      "url": "https://yourdomain.com",
+      "description": "Example production deployment"
+    }
+  ],
+  "tags": [
+    {
+      "name": "health",
+      "description": "Public health and availability checks."
+    },
+    {
+      "name": "mcp",
+      "description": "Authenticated Model Context Protocol endpoint."
+    }
+  ],
+  "paths": {
+    "/health": {
+      "get": {
+        "tags": [
+          "health"
+        ],
+        "operationId": "getHealth",
+        "summary": "Get server health",
+        "description": "Returns basic server status information. No authentication is required.",
+        "responses": {
+          "200": {
+            "description": "Server health information.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthResponse"
+                },
+                "examples": {
+                  "ok": {
+                    "summary": "Healthy server response",
+                    "value": {
+                      "status": "ok",
+                      "server": "azure-devops-mcp-private-connector",
+                      "version": "1.0.0",
+                      "uptimeSeconds": 42
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/mcp": {
+      "post": {
+        "tags": [
+          "mcp"
+        ],
+        "operationId": "postMcp",
+        "summary": "Send a JSON-RPC request to the MCP server",
+        "description": "Sends a JSON-RPC 2.0 request to the MCP endpoint. This route requires a Bearer token containing the caller's Azure DevOps PAT and an Accept header that includes both application/json and text/event-stream. Successful responses are streamed back as text/event-stream.",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/AcceptHeader"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/JsonRpcRequest"
+              },
+              "examples": {
+                "initialize": {
+                  "summary": "MCP initialize request",
+                  "value": {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "initialize",
+                    "params": {
+                      "protocolVersion": "2024-11-05",
+                      "capabilities": {},
+                      "clientInfo": {
+                        "name": "test",
+                        "version": "1.0"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful MCP response streamed over Server-Sent Events.",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "type": "string",
+                  "description": "Raw Server-Sent Events stream payload."
+                },
+                "examples": {
+                  "initialize": {
+                    "summary": "Initialize response event stream",
+                    "value": "event: message\ndata: {\"result\":{\"protocolVersion\":\"2024-11-05\",\"capabilities\":{\"logging\":{},\"tools\":{\"listChanged\":true}},\"serverInfo\":{\"name\":\"azure-devops-mcp-private-connector\",\"version\":\"1.0.0\"}},\"jsonrpc\":\"2.0\",\"id\":1}\n\n"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing Bearer token or invalid Azure DevOps PAT.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JsonRpcErrorResponse"
+                },
+                "examples": {
+                  "unauthorized": {
+                    "summary": "Unauthorized response",
+                    "value": {
+                      "jsonrpc": "2.0",
+                      "error": {
+                        "code": -32001,
+                        "message": "Unauthorized"
+                      },
+                      "id": null
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "406": {
+            "description": "Client must accept both application/json and text/event-stream.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JsonRpcErrorResponse"
+                },
+                "examples": {
+                  "notAcceptable": {
+                    "summary": "Missing required Accept header values",
+                    "value": {
+                      "jsonrpc": "2.0",
+                      "error": {
+                        "code": -32000,
+                        "message": "Not Acceptable: Client must accept both application/json and text/event-stream"
+                      },
+                      "id": null
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "BearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "Azure DevOps PAT"
+      }
+    },
+    "parameters": {
+      "AcceptHeader": {
+        "name": "Accept",
+        "in": "header",
+        "required": true,
+        "description": "Required by the MCP Streamable HTTP transport. The client must advertise support for both JSON and event streams.",
+        "schema": {
+          "type": "string"
+        },
+        "example": "application/json, text/event-stream"
+      }
+    },
+    "schemas": {
+      "HealthResponse": {
+        "type": "object",
+        "required": [
+          "status",
+          "server",
+          "version",
+          "uptimeSeconds"
+        ],
+        "properties": {
+          "status": {
+            "type": "string",
+            "example": "ok"
+          },
+          "server": {
+            "type": "string",
+            "example": "azure-devops-mcp-private-connector"
+          },
+          "version": {
+            "type": "string",
+            "example": "1.0.0"
+          },
+          "uptimeSeconds": {
+            "type": "integer",
+            "format": "int64",
+            "example": 42
+          }
+        }
+      },
+      "JsonRpcId": {
+        "oneOf": [
+          {
+            "type": "integer"
+          },
+          {
+            "type": "string"
+          }
+        ]
+      },
+      "JsonRpcRequest": {
+        "type": "object",
+        "required": [
+          "jsonrpc",
+          "id",
+          "method"
+        ],
+        "properties": {
+          "jsonrpc": {
+            "type": "string",
+            "enum": [
+              "2.0"
+            ]
+          },
+          "id": {
+            "$ref": "#/components/schemas/JsonRpcId"
+          },
+          "method": {
+            "type": "string",
+            "example": "initialize"
+          },
+          "params": {
+            "type": "object",
+            "additionalProperties": true,
+            "description": "Method-specific JSON-RPC parameters."
+          }
+        },
+        "additionalProperties": false
+      },
+      "JsonRpcError": {
+        "type": "object",
+        "required": [
+          "code",
+          "message"
+        ],
+        "properties": {
+          "code": {
+            "type": "integer"
+          },
+          "message": {
+            "type": "string"
+          },
+          "data": {
+            "description": "Optional structured error details."
+          }
+        }
+      },
+      "JsonRpcErrorResponse": {
+        "type": "object",
+        "required": [
+          "jsonrpc",
+          "error",
+          "id"
+        ],
+        "properties": {
+          "jsonrpc": {
+            "type": "string",
+            "enum": [
+              "2.0"
+            ]
+          },
+          "error": {
+            "$ref": "#/components/schemas/JsonRpcError"
+          },
+          "id": {
+            "nullable": true,
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/JsonRpcId"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  }
+}
