@@ -150,7 +150,9 @@ describe("composite Azure DevOps services", () => {
         throw new Error(`Unexpected GET ${path}`);
       }),
       post: vi.fn(async (path: string, body: unknown) => {
-        expect(path).toBe("/Allowed%20Project/_apis/wit/wiql?api-version=7.1");
+        expect(path).toBe(
+          "/Allowed%20Project/_apis/wit/wiql?timePrecision=true&api-version=7.1",
+        );
         const query = (body as { query: string }).query;
         expect(query).toContain("[System.Tags] CONTAINS 'Blocked'");
         expect(query).toContain("[System.ChangedDate] < '2026-03-18T12:00:00.000Z'");
@@ -395,6 +397,7 @@ describe("composite Azure DevOps services", () => {
     const client = {
       get: vi.fn(async (path: string) => {
         if (path.includes("/_apis/wit/workitems/500?") && path.includes("$expand=relations")) {
+          expect(path).not.toContain("fields=");
           return {
             id: 500,
             fields: {

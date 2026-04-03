@@ -283,10 +283,12 @@ async function runWiqlQuery(
   client: AzureDevOpsClientLike,
   wiql: string,
   project?: string,
+  options: { readonly timePrecision?: boolean } = {},
 ): Promise<number[]> {
   const pathPrefix = project ? `/${encodeURIComponent(project)}` : "";
+  const timePrecision = options.timePrecision ? "timePrecision=true&" : "";
   const response = await client.post<{ workItems?: Array<{ id?: number }> }>(
-    `${pathPrefix}/_apis/wit/wiql?api-version=7.1`,
+    `${pathPrefix}/_apis/wit/wiql?${timePrecision}api-version=7.1`,
     { query: wiql },
   );
 
@@ -319,12 +321,11 @@ async function loadWorkItemById(
   options: { readonly includeRelations?: boolean } = {},
 ): Promise<unknown> {
   const fields = WORK_ITEM_FIELDS.map(encodeURIComponent).join(",");
-  const expand = options.includeRelations ? "&$expand=relations" : "";
+  const query = options.includeRelations
+    ? "$expand=relations&api-version=7.1"
+    : `fields=${fields}&api-version=7.1`;
   return withAzureContext(
-    () =>
-      client.get<unknown>(
-        `/_apis/wit/workitems/${id}?fields=${fields}${expand}&api-version=7.1`,
-      ),
+    () => client.get<unknown>(`/_apis/wit/workitems/${id}?${query}`),
     messages,
   );
 }
@@ -666,7 +667,10 @@ export async function getBlockedItems(
   const cutoff = new Date(now.getTime() - 5 * DAY_MS).toISOString();
   const iterationPath = await resolveIterationPath(client, project, input.team, input.iterationPath);
   const ids = await withAzureContext(
-    () => runWiqlQuery(client, buildBlockedItemsWiql(iterationPath, cutoff), project),
+    () =>
+      runWiqlQuery(client, buildBlockedItemsWiql(iterationPath, cutoff), project, {
+        timePrecision: true,
+      }),
     {
       unauthorized:
         "Azure DevOps authentication failed while loading blocked work items. Verify the Bearer token contains a valid Azure DevOps PAT and that it has organization access.",
