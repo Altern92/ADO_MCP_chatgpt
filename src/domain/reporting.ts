@@ -42,8 +42,9 @@ type ProjectScopedConfig = Pick<AppConfig, "azdoProjectAllowlist">;
 type QueryTreeMode = "tree" | "flat";
 type SavedQueryExpand = "none" | "fields" | "relations" | "links" | "all";
 
-const DEFAULT_QUERY_DEPTH = 5;
-const MAX_QUERY_DEPTH = 20;
+// Azure DevOps query catalog endpoint currently accepts only depth values 0..2.
+const DEFAULT_QUERY_DEPTH = 2;
+const MAX_QUERY_DEPTH = 2;
 
 export interface ListSavedQueriesInput {
   readonly project: string;

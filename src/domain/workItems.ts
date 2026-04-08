@@ -951,6 +951,7 @@ async function loadWorkItemComments(
   let continuationToken: string | null = null;
   let totalCount: number | null = null;
   let pagesFetched = 0;
+  const pathPrefix = input.project ? `/${encodeURIComponent(input.project)}` : "";
 
   while (true) {
     const params = new URLSearchParams();
@@ -967,7 +968,7 @@ async function loadWorkItemComments(
       value?: unknown[];
       totalCount?: unknown;
       continuationToken?: unknown;
-    }>(`/_apis/wit/workitems/${input.id}/comments?${params.toString()}`);
+    }>(`${pathPrefix}/_apis/wit/workitems/${input.id}/comments?${params.toString()}`);
     const pageItems = ensureArray(response.comments ?? response.value);
 
     if (totalCount === null) {
@@ -1297,7 +1298,10 @@ export async function listWorkItemComments(
     normalizedInput.id,
     normalizedInput.project,
   );
-  const result = await loadWorkItemComments(client, normalizedInput);
+  const result = await loadWorkItemComments(client, {
+    ...normalizedInput,
+    project: workItem.project ?? normalizedInput.project,
+  });
 
   return {
     workItemId: normalizedInput.id,

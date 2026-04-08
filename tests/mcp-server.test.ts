@@ -125,7 +125,7 @@ describe("MCP server tool registration", () => {
     expect(
       server._registeredTools.list_saved_queries.inputSchema.safeParse({
         project: "Allowed Project",
-        depth: 21,
+        depth: 3,
       }).success,
     ).toBe(false);
     expect(
@@ -366,7 +366,7 @@ describe("MCP server tool registration", () => {
     });
     const listSavedQueries = server._registeredTools.list_saved_queries.inputSchema.safeParse({
       project: " Allowed Project ",
-      depth: 3,
+      depth: 2,
       mode: "flat",
       includeWiql: true,
       includeRaw: true,

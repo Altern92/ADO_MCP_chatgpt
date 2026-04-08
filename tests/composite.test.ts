@@ -118,6 +118,95 @@ describe("composite Azure DevOps services", () => {
     );
   });
 
+  it("falls back to reviewer email matching when the identities endpoint is unavailable", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-03-23T12:00:00.000Z"));
+
+    const client = {
+      get: vi.fn(async (path: string) => {
+        if (path === "/_apis/projects?api-version=7.1") {
+          return {
+            value: [{ id: "1", name: "Allowed Project" }],
+          };
+        }
+
+        if (path.startsWith("/_apis/Identities?")) {
+          throw new AzureDevOpsApiError(path, 401, "corr-identity");
+        }
+
+        if (path.includes("/_apis/git/pullrequests?searchCriteria.status=active")) {
+          return {
+            value: [
+              {
+                pullRequestId: 9,
+                title: "Review fallback path",
+                repository: { name: "frontend" },
+                createdBy: { displayName: "Alex" },
+                reviewers: [
+                  {
+                    id: "user-1",
+                    uniqueName: "me@example.com",
+                    vote: 0,
+                    hasDeclined: false,
+                  },
+                ],
+              },
+            ],
+          };
+        }
+
+        if (path.includes("/_apis/build/builds?")) {
+          return {
+            value: [],
+          };
+        }
+
+        if (path.includes("/_apis/wit/workitems?ids=101")) {
+          return {
+            value: [
+              {
+                id: 101,
+                fields: {
+                  "System.Title": "Investigate flaky tests",
+                  "System.State": "Active",
+                  "Microsoft.VSTS.Common.Priority": 1,
+                },
+              },
+            ],
+          };
+        }
+
+        throw new Error(`Unexpected GET ${path}`);
+      }),
+      post: vi.fn(async (path: string, body: unknown) => {
+        expect(path).toBe("/_apis/wit/wiql?api-version=7.1");
+        const query = (body as { query: string }).query;
+        expect(query).toContain("[System.AssignedTo] = 'me@example.com'");
+        return { workItems: [{ id: 101 }] };
+      }),
+    };
+
+    const services = createAzureDevOpsServices(client, {
+      azdoProjectAllowlist: ["Allowed Project"],
+    });
+
+    const digest = await services.getMyDailyDigest({
+      myEmail: "me@example.com",
+    });
+
+    expect(digest.prsPendingMyReview).toEqual([
+      {
+        pullRequestId: 9,
+        title: "Review fallback path",
+        repository: "frontend",
+        createdBy: "Alex",
+      },
+    ]);
+    expect(client.get).toHaveBeenCalledWith(
+      expect.stringContaining("searchCriteria.status=active"),
+    );
+  });
+
   it("returns stale blocked items scoped to the current team iteration", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-03-23T12:00:00.000Z"));

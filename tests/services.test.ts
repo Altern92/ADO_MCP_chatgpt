@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { AzureDevOpsApiError } from "../src/errors.js";
 import { createAzureDevOpsServices } from "../src/domain/index.js";
 
 describe("Azure DevOps services", () => {
@@ -299,7 +300,7 @@ describe("Azure DevOps services", () => {
 
         if (
           path ===
-          "/_apis/wit/workitems/101/comments?%24top=200&includeDeleted=true&%24expand=renderedText&api-version=7.1-preview.4"
+          "/Allowed%20Project/_apis/wit/workitems/101/comments?%24top=200&includeDeleted=true&%24expand=renderedText&api-version=7.1-preview.4"
         ) {
           return {
             comments: [
@@ -3793,7 +3794,7 @@ describe("Azure DevOps services", () => {
 
         if (
           path ===
-          "/_apis/wit/workitems/101/comments?%24top=1&includeDeleted=true&%24expand=renderedText&api-version=7.1-preview.4"
+          "/Allowed%20Project/_apis/wit/workitems/101/comments?%24top=1&includeDeleted=true&%24expand=renderedText&api-version=7.1-preview.4"
         ) {
           return {
             totalCount: 2,
@@ -3810,7 +3811,7 @@ describe("Azure DevOps services", () => {
 
         if (
           path ===
-          "/_apis/wit/workitems/101/comments?%24top=1&includeDeleted=true&%24expand=renderedText&api-version=7.1-preview.4&continuationToken=page-2"
+          "/Allowed%20Project/_apis/wit/workitems/101/comments?%24top=1&includeDeleted=true&%24expand=renderedText&api-version=7.1-preview.4&continuationToken=page-2"
         ) {
           return {
             totalCount: 2,
@@ -4117,7 +4118,7 @@ describe("Azure DevOps services", () => {
 
         if (
           path ===
-          "/_apis/wit/workitems/202/comments?%24top=200&includeDeleted=true&%24expand=renderedText&api-version=7.1-preview.4"
+          "/Allowed%20Project/_apis/wit/workitems/202/comments?%24top=200&includeDeleted=true&%24expand=renderedText&api-version=7.1-preview.4"
         ) {
           return {
             comments: [
@@ -4132,7 +4133,7 @@ describe("Azure DevOps services", () => {
 
         if (
           path ===
-          "/_apis/wit/workitems/101/comments?%24top=200&includeDeleted=true&%24expand=renderedText&api-version=7.1-preview.4"
+          "/Allowed%20Project/_apis/wit/workitems/101/comments?%24top=200&includeDeleted=true&%24expand=renderedText&api-version=7.1-preview.4"
         ) {
           return {
             comments: [
@@ -5448,6 +5449,99 @@ describe("Azure DevOps services", () => {
     expect(client.get).not.toHaveBeenCalled();
   });
 
+  it("falls back to project activity when the Azure DevOps identities endpoint is unavailable", async () => {
+    const client = {
+      get: vi.fn(async (path: string) => {
+        if (
+          path ===
+          "/Allowed%20Project/_apis/Identities?searchFilter=General&filterValue=alice&queryMembership=None&api-version=7.1"
+        ) {
+          throw new AzureDevOpsApiError(path, 401, "corr-identity");
+        }
+
+        if (
+          path ===
+          "/Allowed%20Project/_apis/git/pullrequests?searchCriteria.status=active&api-version=7.1"
+        ) {
+          return {
+            value: [
+              {
+                createdBy: {
+                  displayName: "Alice Johnson",
+                  uniqueName: "alice.johnson@example.com",
+                  id: "1",
+                },
+                reviewers: [
+                  {
+                    displayName: "Bob Example",
+                    uniqueName: "bob@example.com",
+                    id: "2",
+                  },
+                ],
+              },
+            ],
+          };
+        }
+
+        if (
+          path ===
+          "/_apis/wit/workitems?ids=101&fields=System.AssignedTo,System.CreatedBy,System.ChangedBy&api-version=7.1"
+        ) {
+          return {
+            value: [
+              {
+                id: 101,
+                fields: {
+                  "System.AssignedTo": {
+                    displayName: "Alice Johnson",
+                    uniqueName: "alice.johnson@example.com",
+                    id: "1",
+                  },
+                  "System.CreatedBy": {
+                    displayName: "Carol Example",
+                    uniqueName: "carol@example.com",
+                    id: "3",
+                  },
+                },
+              },
+            ],
+          };
+        }
+
+        throw new Error(`Unexpected GET ${path}`);
+      }),
+      post: vi.fn(async (path: string) => {
+        if (path === "/Allowed%20Project/_apis/wit/wiql?api-version=7.1&$top=50") {
+          return {
+            workItems: [{ id: 101 }],
+          };
+        }
+
+        throw new Error(`Unexpected POST ${path}`);
+      }),
+    };
+
+    const services = createAzureDevOpsServices(client, {
+      azdoProjectAllowlist: ["Allowed Project"],
+    });
+
+    const summary = await services.resolveIdentity({
+      query: "alice",
+      project: "Allowed Project",
+      top: 2,
+      includeRaw: true,
+    });
+
+    expect(summary.identities.map((identity) => identity.id)).toEqual(["1"]);
+    expect(client.post).toHaveBeenCalledWith(
+      "/Allowed%20Project/_apis/wit/wiql?api-version=7.1&$top=50",
+      {
+        query:
+          "SELECT [System.Id] FROM WorkItems WHERE [System.TeamProject] = 'Allowed Project' ORDER BY [System.ChangedDate] DESC",
+      },
+    );
+  });
+
   it("lists saved queries with tree mode, WIQL expansion, and raw payloads", async () => {
     const client = {
       get: vi.fn().mockResolvedValue({
@@ -5534,6 +5628,27 @@ describe("Azure DevOps services", () => {
     ]);
   });
 
+  it("clamps saved-query depth to the Azure DevOps supported range", async () => {
+    const client = {
+      get: vi.fn().mockResolvedValue({ value: [] }),
+      post: vi.fn(),
+    };
+
+    const services = createAzureDevOpsServices(client, {
+      azdoProjectAllowlist: ["Allowed Project"],
+    });
+
+    const summary = await services.listSavedQueries({
+      project: "Allowed Project",
+      depth: 10,
+    });
+
+    expect(summary.depth).toBe(2);
+    expect(client.get).toHaveBeenCalledWith(
+      "/Allowed%20Project/_apis/wit/queries?$depth=2&$expand=minimal&api-version=7.1",
+    );
+  });
+
   it("runs a saved query by id and returns ordered work item ids with top limits", async () => {
     const client = {
       get: vi.fn(async (path: string) => {
@@ -5584,7 +5699,7 @@ describe("Azure DevOps services", () => {
       get: vi.fn(async (path: string) => {
         if (
           path ===
-          "/Allowed%20Project/_apis/wit/queries?$depth=20&$expand=minimal&api-version=7.1"
+          "/Allowed%20Project/_apis/wit/queries?$depth=2&$expand=minimal&api-version=7.1"
         ) {
           return {
             value: [
@@ -5883,7 +5998,7 @@ describe("Azure DevOps services", () => {
       get: vi.fn(async (path: string) => {
         if (
           path ===
-          "/Allowed%20Project/_apis/wit/queries?$depth=20&$expand=minimal&api-version=7.1"
+          "/Allowed%20Project/_apis/wit/queries?$depth=2&$expand=minimal&api-version=7.1"
         ) {
           return {
             value: [

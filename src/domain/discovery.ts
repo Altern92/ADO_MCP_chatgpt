@@ -1,5 +1,6 @@
 import { assertProjectAllowed, type AppConfig } from "../config.js";
 import type { AzureDevOpsClientLike } from "../azure/client.js";
+import { AzureDevOpsApiError } from "../errors.js";
 import type {
   AreaPathNodeSummary,
   AreaPathsCatalog,
@@ -21,6 +22,7 @@ import {
   mapWorkItemField,
   mapWorkItemTag,
 } from "./shared.js";
+import { listProjects } from "./projects.js";
 
 type ProjectScopedConfig = Pick<AppConfig, "azdoProjectAllowlist">;
 type DiscoveryMode = "tree" | "flat";
@@ -28,6 +30,13 @@ type DiscoveryMode = "tree" | "flat";
 const DEFAULT_DISCOVERY_DEPTH = 10;
 const MAX_DISCOVERY_DEPTH = 20;
 const DEFAULT_DISCOVERY_TOP = 100;
+const IDENTITY_WORK_ITEM_SAMPLE_SIZE = 50;
+const IDENTITY_PULL_REQUEST_STATUS = "active";
+const IDENTITY_WORK_ITEM_FIELDS = [
+  "System.AssignedTo",
+  "System.CreatedBy",
+  "System.ChangedBy",
+] as const;
 
 export interface ListWorkItemFieldsInput {
   readonly project: string;
@@ -292,6 +301,156 @@ export function rankResolvedIdentities(
     .map((entry) => entry.identity);
 }
 
+function escapeWiqlLiteral(value: string): string {
+  return value.replace(/'/g, "''");
+}
+
+function buildRecentIdentityWiql(project: string): string {
+  return `SELECT [System.Id] FROM WorkItems WHERE [System.TeamProject] = '${escapeWiqlLiteral(project)}' ORDER BY [System.ChangedDate] DESC`;
+}
+
+function mergeResolvedIdentity(
+  existing: ResolvedIdentitySummary | undefined,
+  candidate: ResolvedIdentitySummary,
+): ResolvedIdentitySummary {
+  if (!existing) {
+    return candidate;
+  }
+
+  return {
+    displayName: existing.displayName ?? candidate.displayName,
+    uniqueName: existing.uniqueName ?? candidate.uniqueName,
+    descriptor: existing.descriptor ?? candidate.descriptor,
+    id: existing.id ?? candidate.id,
+    url: existing.url ?? candidate.url,
+    raw: existing.raw ?? candidate.raw,
+  };
+}
+
+function getResolvedIdentityKey(identity: ResolvedIdentitySummary): string | null {
+  return (
+    normalizeText(identity.id) ||
+    normalizeText(identity.uniqueName) ||
+    normalizeText(identity.descriptor) ||
+    normalizeText(identity.displayName)
+  );
+}
+
+function collectMappedIdentities(
+  bucket: Map<string, ResolvedIdentitySummary>,
+  rawIdentities: readonly unknown[],
+  includeRaw: boolean | undefined,
+): void {
+  for (const rawIdentity of rawIdentities) {
+    const mapped = mapResolvedIdentity(rawIdentity, includeRaw);
+    if (!mapped.displayName && !mapped.uniqueName && !mapped.id) {
+      continue;
+    }
+
+    const key = getResolvedIdentityKey(mapped);
+    if (!key) {
+      continue;
+    }
+
+    bucket.set(key, mergeResolvedIdentity(bucket.get(key), mapped));
+  }
+}
+
+async function tryResolveIdentityViaApi(
+  client: AzureDevOpsClientLike,
+  input: ResolveIdentityInput,
+): Promise<ResolvedIdentitySummary[] | null> {
+  const pathPrefix = input.project ? `/${encodeProject(input.project)}` : "";
+
+  try {
+    const response = await client.get<unknown>(
+      `${pathPrefix}/_apis/Identities?searchFilter=General&filterValue=${encodeURIComponent(input.query)}&queryMembership=None&api-version=7.1`,
+    );
+
+    return getResponseCollection(response, ["value", "identities", "members"])
+      .map((rawIdentity) => mapResolvedIdentity(rawIdentity, input.includeRaw))
+      .filter(
+        (identity) =>
+          identity.displayName !== null ||
+          identity.uniqueName !== null ||
+          identity.id !== null,
+      );
+  } catch (error) {
+    if (
+      error instanceof AzureDevOpsApiError &&
+      [401, 403, 404].includes(error.azureStatus)
+    ) {
+      return null;
+    }
+
+    throw error;
+  }
+}
+
+async function listIdentityProjects(
+  client: AzureDevOpsClientLike,
+  config: ProjectScopedConfig,
+  project: string | undefined,
+): Promise<string[]> {
+  if (project) {
+    return [project];
+  }
+
+  const projects = await listProjects(client, config);
+  return projects.map((item) => item.name).filter((name): name is string => Boolean(name));
+}
+
+async function collectProjectIdentityCandidates(
+  client: AzureDevOpsClientLike,
+  project: string,
+  includeRaw: boolean | undefined,
+): Promise<ResolvedIdentitySummary[]> {
+  const candidates = new Map<string, ResolvedIdentitySummary>();
+
+  const pullRequests = await client.get<{ value?: unknown[] }>(
+    `/${encodeProject(project)}/_apis/git/pullrequests?${new URLSearchParams({
+      "searchCriteria.status": IDENTITY_PULL_REQUEST_STATUS,
+      "api-version": "7.1",
+    }).toString()}`,
+  );
+
+  for (const pullRequest of ensureArray(pullRequests.value)) {
+    const record = asRecord(pullRequest);
+    collectMappedIdentities(candidates, [record.createdBy, ...ensureArray(record.reviewers)], includeRaw);
+  }
+
+  const wiqlResponse = await client.post<{ workItems?: Array<{ id?: number }> }>(
+    `/${encodeProject(project)}/_apis/wit/wiql?api-version=7.1&$top=${IDENTITY_WORK_ITEM_SAMPLE_SIZE}`,
+    { query: buildRecentIdentityWiql(project) },
+  );
+  const ids = ensureArray<{ id?: number }>(wiqlResponse.workItems)
+    .map((item) => item.id)
+    .filter((id): id is number => Number.isInteger(id))
+    .slice(0, IDENTITY_WORK_ITEM_SAMPLE_SIZE);
+
+  if (ids.length > 0) {
+    const fields = IDENTITY_WORK_ITEM_FIELDS.map(encodeURIComponent).join(",");
+    const workItems = await client.get<{ value?: unknown[] }>(
+      `/_apis/wit/workitems?ids=${ids.join(",")}&fields=${fields}&api-version=7.1`,
+    );
+
+    for (const workItem of ensureArray(workItems.value)) {
+      const fieldsRecord = asRecord(asRecord(workItem).fields);
+      collectMappedIdentities(
+        candidates,
+        [
+          fieldsRecord["System.AssignedTo"],
+          fieldsRecord["System.CreatedBy"],
+          fieldsRecord["System.ChangedBy"],
+        ],
+        includeRaw,
+      );
+    }
+  }
+
+  return [...candidates.values()];
+}
+
 export function buildAreaPathCatalog(
   raw: unknown,
   options: {
@@ -459,20 +618,32 @@ export async function resolveIdentity(
   }
 
   const top = clampTop(input.top, 20);
-  const pathPrefix = input.project ? `/${encodeProject(input.project)}` : "";
-  const response = await client.get<unknown>(
-    `${pathPrefix}/_apis/Identities?searchFilter=General&filterValue=${encodeURIComponent(input.query)}&queryMembership=None&api-version=7.1`,
-  );
-  const mapped = getResponseCollection(response, ["value", "identities", "members"])
-    .map((rawIdentity) => mapResolvedIdentity(rawIdentity, input.includeRaw))
-    .filter(
-      (identity) =>
-        identity.displayName !== null ||
-        identity.uniqueName !== null ||
-        identity.id !== null,
-    );
-  const ranked = rankResolvedIdentities(input.query, mapped);
-  const identities = (ranked.length > 0 ? ranked : mapped).slice(0, top);
+  const directMatches = await tryResolveIdentityViaApi(client, input);
+  const mapped =
+    directMatches ??
+    (
+      await Promise.all(
+        (
+          await listIdentityProjects(client, config, input.project)
+        ).map((project) =>
+          collectProjectIdentityCandidates(client, project, input.includeRaw),
+        ),
+      )
+    ).flat();
+  const deduped = new Map<string, ResolvedIdentitySummary>();
+
+  for (const identity of mapped) {
+    const key = getResolvedIdentityKey(identity);
+    if (!key) {
+      continue;
+    }
+
+    deduped.set(key, mergeResolvedIdentity(deduped.get(key), identity));
+  }
+
+  const resolved = [...deduped.values()];
+  const ranked = rankResolvedIdentities(input.query, resolved);
+  const identities = (ranked.length > 0 ? ranked : resolved).slice(0, top);
 
   return {
     query: input.query,

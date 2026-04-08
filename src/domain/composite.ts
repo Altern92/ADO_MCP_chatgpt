@@ -375,17 +375,29 @@ async function resolveUserIdByEmail(
     "api-version": "7.1",
   });
 
-  const response = await withAzureContext(
-    () => client.get<{ value?: unknown[] }>(`/_apis/Identities?${params.toString()}`),
-    {
-      unauthorized:
-        "Azure DevOps authentication failed while resolving the reviewer identity for the daily digest. Verify the Bearer token contains a valid Azure DevOps PAT and that it has organization access.",
-      forbidden:
-        "Azure DevOps denied access while resolving the reviewer identity for the daily digest.",
-      notFound:
-        "Azure DevOps could not resolve the reviewer identity endpoint for the daily digest.",
-    },
-  );
+  let response: { value?: unknown[] };
+  try {
+    response = await withAzureContext(
+      () => client.get<{ value?: unknown[] }>(`/_apis/Identities?${params.toString()}`),
+      {
+        unauthorized:
+          "Azure DevOps authentication failed while resolving the reviewer identity for the daily digest. Verify the Bearer token contains a valid Azure DevOps PAT and that it has organization access.",
+        forbidden:
+          "Azure DevOps denied access while resolving the reviewer identity for the daily digest.",
+        notFound:
+          "Azure DevOps could not resolve the reviewer identity endpoint for the daily digest.",
+      },
+    );
+  } catch (error) {
+    if (
+      error instanceof AppError &&
+      (error.statusCode === 401 || error.statusCode === 403 || error.statusCode === 404)
+    ) {
+      return null;
+    }
+
+    throw error;
+  }
 
   const identities = ensureArray(response.value);
   const normalizedEmail = email.trim().toLowerCase();
@@ -394,6 +406,25 @@ async function resolveUserIdByEmail(
     identities[0];
 
   return asString(asRecord(selected).id);
+}
+
+function isPendingReviewerMatch(
+  rawReviewer: unknown,
+  email: string,
+  userId: string | null,
+): boolean {
+  const reviewer = asRecord(rawReviewer);
+  const normalizedEmail = toLower(email);
+  const reviewerId = toLower(asString(reviewer.id));
+  const reviewerEmail = toLower(getIdentityEmail(rawReviewer));
+  const vote = asInteger(reviewer.vote);
+  const hasDeclined = Boolean(reviewer.hasDeclined);
+
+  const identityMatches =
+    (userId !== null && reviewerId === toLower(userId)) ||
+    (normalizedEmail !== "" && reviewerEmail === normalizedEmail);
+
+  return identityMatches && !hasDeclined && (vote === null || vote === 0);
 }
 
 async function resolveDigestProjects(
@@ -475,8 +506,9 @@ async function fetchPendingReviewPullRequests(
   client: AzureDevOpsClientLike,
   projectNames: readonly string[],
   userId: string | null,
+  email: string,
 ): Promise<DailyDigestPullRequestSummary[]> {
-  if (!userId || projectNames.length === 0) {
+  if (projectNames.length === 0) {
     return [];
   }
 
@@ -486,9 +518,9 @@ async function fetchPendingReviewPullRequests(
         () =>
           client.get<{ value?: unknown[] }>(
             `/${encodeURIComponent(project)}/_apis/git/pullrequests?${new URLSearchParams({
-              "searchCriteria.reviewerId": userId,
               "searchCriteria.status": "active",
               "api-version": "7.1",
+              ...(userId ? { "searchCriteria.reviewerId": userId } : {}),
             }).toString()}`,
           ),
         {
@@ -505,7 +537,24 @@ async function fetchPendingReviewPullRequests(
 
   return responses
     .flatMap((response) =>
-      ensureArray(response.value).map((raw): DailyDigestPullRequestSummary => {
+      ensureArray(response.value)
+        .filter((raw) => {
+          if (userId !== null) {
+            const reviewers = ensureArray(asRecord(raw).reviewers);
+            if (reviewers.length === 0) {
+              return true;
+            }
+
+            return reviewers.some((reviewer) =>
+              isPendingReviewerMatch(reviewer, email, userId),
+            );
+          }
+
+          return ensureArray(asRecord(raw).reviewers).some((reviewer) =>
+            isPendingReviewerMatch(reviewer, email, null),
+          );
+        })
+        .map((raw): DailyDigestPullRequestSummary => {
         const record = asRecord(raw);
         return {
           pullRequestId: asInteger(record.pullRequestId) ?? 0,
@@ -583,7 +632,7 @@ export async function getMyDailyDigest(
 
   const [myWorkItems, prsPendingMyReview, failedPipelines] = await Promise.all([
     fetchDigestWorkItems(client, email, project, projectNames),
-    fetchPendingReviewPullRequests(client, projectNames, userId),
+    fetchPendingReviewPullRequests(client, projectNames, userId, email),
     fetchFailedPipelines(client, projectNames, new Date(now.getTime() - DAY_MS).toISOString()),
   ]);
 

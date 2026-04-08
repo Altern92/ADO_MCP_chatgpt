@@ -2690,9 +2690,9 @@ export function buildMcpServer(services: AzureDevOpsServices, logger: Logger): M
           .number()
           .int()
           .min(0)
-          .max(20)
+          .max(2)
           .optional()
-          .describe("Maximum query-folder depth to retrieve from the Azure DevOps query hierarchy."),
+          .describe("Maximum query-folder depth to retrieve from the Azure DevOps query hierarchy. Azure DevOps currently accepts values from 0 to 2."),
         mode: z
           .enum(["tree", "flat"])
           .optional()
