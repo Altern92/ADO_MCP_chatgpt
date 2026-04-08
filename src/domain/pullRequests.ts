@@ -1,4 +1,4 @@
-import { assertProjectAllowed, type AppConfig } from "../config.js";
+import { assertProjectAllowed, isProjectAllowed, type AppConfig } from "../config.js";
 import type { AzureDevOpsClientLike } from "../azure/client.js";
 import type { PullRequestSummary, WorkItemSummary } from "../models.js";
 import { ensureArray, mapPullRequest } from "./shared.js";
@@ -44,5 +44,8 @@ export async function getPullRequestWorkItems(
     .map((workItem) => workItem.id)
     .filter((id): id is number => Number.isInteger(id));
 
-  return fetchWorkItemsByIds(client, ids);
+  const workItems = await fetchWorkItemsByIds(client, ids);
+  return config.azdoProjectAllowlist.length === 0
+    ? workItems
+    : workItems.filter((workItem) => isProjectAllowed(workItem.project ?? undefined, config));
 }

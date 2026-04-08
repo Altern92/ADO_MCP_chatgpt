@@ -217,6 +217,8 @@ describe("Azure DevOps v2 services", () => {
     });
 
     const blockedCalls = [
+      () => services.listWorkItemCategories("Blocked Project"),
+      () => services.listWorkItemTypes("Blocked Project"),
       () => services.listTestPlans("Blocked Project"),
       () => services.listTestSuites("Blocked Project", 1),
       () => services.listTestCases("Blocked Project", 1, 2),
