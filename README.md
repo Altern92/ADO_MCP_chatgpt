@@ -116,7 +116,6 @@ There is currently no `npm run lint` script in this repo.
 
 - [USAGE.md](./USAGE.md): practical usage patterns and example workflows
 - [TOOLS_REFERENCE.md](./TOOLS_REFERENCE.md): grouped tool catalog, key inputs, outputs, and smoke test checklist
-- [Implementation_Phases.md](./Implementation_Phases.md): execution history and release-readiness checklist
 
 ## Known limitations
 
